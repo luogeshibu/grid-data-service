@@ -1,0 +1,67 @@
+# Copy this file and rename it, e.g.:
+#   jeddah.yaml
+#   jazan.yaml
+#   madinah.yaml
+#
+# Then only change configuration + SQL. Do not edit FastAPI core.
+
+id: my-project
+name: My Project
+description: Reusable project profile
+enabled: false
+
+metadata:
+  owner: NARI
+  environment: dev
+
+datasources:
+  model:
+    driver: oracle
+    user: ${MODEL_ORACLE_USER}
+    password: ${MODEL_ORACLE_PASSWORD}
+    dsn: ${MODEL_ORACLE_DSN}
+
+hierarchy:
+  root_query: tree_root
+  children_queries: {}
+
+entities: {}
+
+search:
+  query: search
+  default_limit: 50
+  max_limit: 200
+
+realtime:
+  enabled: false
+
+queries:
+  tree_root:
+    source: model
+    result: many
+    cache_ttl_seconds: 60
+    allowed_params: []
+    required_params: []
+    sql: |
+      SELECT
+          '1' AS id,
+          'Example Root' AS name,
+          'root' AS type,
+          0 AS has_children
+      FROM dual
+
+  search:
+    source: model
+    result: many
+    cache_ttl_seconds: 0
+    allowed_params: [q_like, limit, entity_type]
+    required_params: [q_like, limit]
+    sql: |
+      SELECT
+          '1' AS id,
+          'Example' AS name,
+          'example' AS type,
+          NULL AS subtype
+      FROM dual
+      WHERE UPPER('Example') LIKE :q_like
+        AND ROWNUM <= :limit
