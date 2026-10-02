@@ -1,33 +1,29 @@
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-.Python
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+*.egg-info/
+dist/
+build/
 
 # Virtual environments
 .venv/
 venv/
-env/
 
-# Local configuration / secrets
-.env
-.env.*
-!.env.example
-
-# IDE
+# IDE / OS
 .vscode/
 .idea/
-
-# OS
 .DS_Store
 Thumbs.db
 
-# Logs / build
+# Runtime
+.runtime/
 *.log
-build/
-dist/
-*.egg-info/
+*.pid
+
+# Deployment-local credentials / overrides
+config/local/*.yaml
+config/local/*.yml
+!config/local/README.md

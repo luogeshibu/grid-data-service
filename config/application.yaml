@@ -1,0 +1,15 @@
+api:
+  prefix: /api/v1
+  title: Grid Data Service
+  description: Read-only D5000 power equipment catalog, topology and measurement API
+  docs_url: /docs
+  redoc_url: /redoc
+
+runtime:
+  default_profile: jeddah
+  query_timeout_seconds: 30
+  cors_origins:
+    - "*"
+  trusted_hosts:
+    - "*"
+  request_id_header: X-Request-ID

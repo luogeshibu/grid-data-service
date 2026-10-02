@@ -1,29 +1,24 @@
-# Profiles
+# Configuration
 
-Each project gets one YAML profile.
-
-Examples:
+There are three configuration layers:
 
 ```text
-profiles/
-├─ jeddah.yaml
-├─ jazan.yaml
-├─ madinah.yaml
-└─ another-project.yaml
+config/application.yaml
+    Application/API runtime settings.
+
+config/profiles/<site>.yaml
+    Reusable business profile: hierarchy, entity types, SQL, cache policy.
+
+config/local/<site>.yaml
+    Deployment-local Oracle endpoint / username overrides; the password is read
+    from GRID_ORACLE_PASSWORD.
 ```
 
-The Python backend stays unchanged.
+For the current Jeddah package, Oracle connection settings are in:
 
-A profile controls:
+```text
+config/local/jeddah.yaml
+```
 
-- Oracle datasource(s)
-- model vs realtime datasource separation
-- tree hierarchy
-- supported entity types
-- all project SQL
-- caching
-- realtime enable/disable
-- generic named-query exposure
-
-Do not put database passwords directly in YAML.
-Use `${ENV_VAR}` and place secrets in `.env` or the deployment environment.
+To change the Oracle endpoint or username, edit that file and restart the service.
+Set `GRID_ORACLE_PASSWORD` in the process environment; do not write it to YAML.

@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.core.read_only import validate_read_only_sql
+
 
 class PoolConfig(BaseModel):
-    min: int = 1
-    max: int = 5
-    increment: int = 1
-    timeout: int = 60
+    min: int = Field(default=1, ge=0)
+    max: int = Field(default=8, ge=1)
+    increment: int = Field(default=1, ge=0)
+    timeout: int = Field(default=60, ge=1)
+    wait_timeout_ms: int = Field(default=10_000, ge=1)
 
 
 class DataSourceConfig(BaseModel):
@@ -24,38 +27,55 @@ class QueryConfig(BaseModel):
     source: str
     sql: str
     result: Literal["many", "one", "scalar"] = "many"
-    cache_ttl_seconds: int = 0
+    cache_ttl_seconds: int = Field(default=0, ge=0)
     exposed: bool = False
-    allowed_params: List[str] = Field(default_factory=list)
-    required_params: List[str] = Field(default_factory=list)
+    allowed_params: list[str] = Field(default_factory=list)
+    required_params: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_sql(self):
+        validate_read_only_sql(self.sql)
+        if not set(self.required_params).issubset(set(self.allowed_params)):
+            raise ValueError("required_params must be a subset of allowed_params")
+        return self
 
 
 class HierarchyConfig(BaseModel):
     root_query: str = "tree_root"
-    children_queries: Dict[str, str] = Field(default_factory=dict)
+    children_queries: dict[str, str] = Field(default_factory=dict)
+
+
+class CatalogConfig(BaseModel):
+    """Typed domain configuration for the power equipment catalog."""
+
+    enabled: bool = True
+    source: str = "model"
+    default_page_size: int = Field(default=50, ge=1, le=500)
+    max_page_size: int = Field(default=200, ge=1, le=5000)
+    cache_ttl_seconds: int = Field(default=15, ge=0)
 
 
 class EntityTypeConfig(BaseModel):
-    detail_query: Optional[str] = None
-    children_query: Optional[str] = None
-    signals_query: Optional[str] = None
-    path_query: Optional[str] = None
-    upstream_query: Optional[str] = None
-    downstream_query: Optional[str] = None
-    topology_query: Optional[str] = None
+    detail_query: str | None = None
+    children_query: str | None = None
+    signals_query: str | None = None
+    path_query: str | None = None
+    upstream_query: str | None = None
+    downstream_query: str | None = None
+    topology_query: str | None = None
 
 
 class SearchConfig(BaseModel):
     query: str = "search"
-    max_limit: int = 200
-    default_limit: int = 50
+    max_limit: int = Field(default=200, ge=1)
+    default_limit: int = Field(default=50, ge=1)
 
 
 class RealtimeConfig(BaseModel):
     enabled: bool = False
-    batch_query: Optional[str] = None
-    signal_query: Optional[str] = None
-    max_batch_size: int = 1000
+    signal_query: str | None = None
+    batch_query: str | None = None
+    max_batch_size: int = Field(default=1000, ge=1)
 
 
 class ProfileConfig(BaseModel):
@@ -63,49 +83,58 @@ class ProfileConfig(BaseModel):
     name: str
     description: str = ""
     enabled: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
-    datasources: Dict[str, DataSourceConfig]
-    queries: Dict[str, QueryConfig]
+    datasources: dict[str, DataSourceConfig]
+    queries: dict[str, QueryConfig]
 
+    catalog: CatalogConfig = Field(default_factory=CatalogConfig)
     hierarchy: HierarchyConfig = Field(default_factory=HierarchyConfig)
-    entities: Dict[str, EntityTypeConfig] = Field(default_factory=dict)
+    entities: dict[str, EntityTypeConfig] = Field(default_factory=dict)
     search: SearchConfig = Field(default_factory=SearchConfig)
     realtime: RealtimeConfig = Field(default_factory=RealtimeConfig)
 
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-
     @model_validator(mode="after")
     def validate_references(self):
-        for name, q in self.queries.items():
-            if q.source not in self.datasources:
+        for query_name, query in self.queries.items():
+            if query.source not in self.datasources:
                 raise ValueError(
-                    f"Query '{name}' references unknown datasource '{q.source}'."
+                    f"Query '{query_name}' references unknown datasource '{query.source}'."
                 )
 
-        referenced = [self.hierarchy.root_query, self.search.query]
-        referenced += list(self.hierarchy.children_queries.values())
+        if self.catalog.source not in self.datasources:
+            raise ValueError(f"Catalog references unknown datasource '{self.catalog.source}'.")
 
-        if self.realtime.enabled:
-            if self.realtime.batch_query:
-                referenced.append(self.realtime.batch_query)
-            if self.realtime.signal_query:
-                referenced.append(self.realtime.signal_query)
+        refs = [self.hierarchy.root_query, self.search.query]
+        refs.extend(self.hierarchy.children_queries.values())
 
-        for entity_cfg in self.entities.values():
-            referenced.extend(
-                [
-                    entity_cfg.detail_query,
-                    entity_cfg.children_query,
-                    entity_cfg.signals_query,
-                    entity_cfg.path_query,
-                    entity_cfg.upstream_query,
-                    entity_cfg.downstream_query,
-                    entity_cfg.topology_query,
-                ]
+        for entity in self.entities.values():
+            refs.extend(
+                q
+                for q in (
+                    entity.detail_query,
+                    entity.children_query,
+                    entity.signals_query,
+                    entity.path_query,
+                    entity.upstream_query,
+                    entity.downstream_query,
+                    entity.topology_query,
+                )
+                if q
             )
 
-        for qname in [x for x in referenced if x]:
-            if qname not in self.queries:
-                raise ValueError(f"Referenced query '{qname}' does not exist.")
+        if self.realtime.enabled:
+            refs.extend(
+                q
+                for q in (
+                    self.realtime.signal_query,
+                    self.realtime.batch_query,
+                )
+                if q
+            )
+
+        missing = sorted({q for q in refs if q not in self.queries})
+        if missing:
+            raise ValueError(f"Referenced queries do not exist: {missing}")
 
         return self

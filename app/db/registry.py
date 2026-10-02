@@ -1,59 +1,49 @@
 from __future__ import annotations
 
-from threading import RLock
-from typing import Dict, Tuple
+import asyncio
+from contextlib import suppress
 
-from app.db.oracle import OraclePool
-from app.models.profile import DataSourceConfig, ProfileConfig
+from app.db.oracle import AsyncOracleDatabase
+from app.models.profile import ProfileConfig
 
 
-class DataSourceRegistry:
-    """
-    Datasources are registered at startup but Oracle pools are created lazily.
+class DatabaseRegistry:
+    def __init__(self, query_timeout_seconds: int = 30):
+        self.query_timeout_seconds = query_timeout_seconds
+        self._configs: dict[tuple[str, str], object] = {}
+        self._databases: dict[tuple[str, str], AsyncOracleDatabase] = {}
+        self._lock = asyncio.Lock()
 
-    This matters for reusable profiles:
-    - the server can start even if an optional realtime datasource is offline;
-    - a disabled realtime feature does not create an unnecessary DB connection;
-    - only datasources actually used by an API request allocate pools.
-    """
+    def register_profile(self, profile: ProfileConfig) -> None:
+        for source_name, source_config in profile.datasources.items():
+            self._configs[(profile.id, source_name)] = source_config
 
-    def __init__(self):
-        self._configs: Dict[Tuple[str, str], DataSourceConfig] = {}
-        self._pools: Dict[Tuple[str, str], OraclePool] = {}
-        self._lock = RLock()
-
-    def initialize_profile(self, profile: ProfileConfig):
-        with self._lock:
-            for source_name, source_cfg in profile.datasources.items():
-                self._configs[(profile.id, source_name)] = source_cfg
-
-    def get(self, profile_id: str, source_name: str) -> OraclePool:
+    async def get(self, profile_id: str, source_name: str) -> AsyncOracleDatabase:
         key = (profile_id, source_name)
 
-        with self._lock:
-            if key not in self._configs:
+        if key in self._databases:
+            return self._databases[key]
+
+        async with self._lock:
+            if key in self._databases:
+                return self._databases[key]
+
+            config = self._configs.get(key)
+            if config is None:
                 raise KeyError(
-                    f"Datasource is not configured: "
-                    f"profile={profile_id}, source={source_name}"
+                    f"Datasource not configured: profile={profile_id}, source={source_name}"
                 )
 
-            pool = self._pools.get(key)
-            if pool is None:
-                pool = OraclePool(self._configs[key])
-                self._pools[key] = pool
+            db = AsyncOracleDatabase(
+                config=config,
+                query_timeout_seconds=self.query_timeout_seconds,
+            )
+            db.open()
+            self._databases[key] = db
+            return db
 
-            return pool
-
-    def close_all(self):
-        with self._lock:
-            for pool in self._pools.values():
-                try:
-                    pool.close()
-                except Exception:
-                    pass
-
-            self._pools.clear()
-            self._configs.clear()
-
-
-datasources = DataSourceRegistry()
+    async def close_all(self) -> None:
+        for db in list(self._databases.values()):
+            with suppress(Exception):
+                await db.close()
+        self._databases.clear()

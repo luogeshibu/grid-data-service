@@ -1,70 +1,84 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from contextlib import suppress
+from typing import Any
 
 import oracledb
 
+from app.core.json import jsonable
 from app.core.read_only import validate_read_only_sql
-from app.core.utils import to_jsonable
 from app.models.profile import DataSourceConfig
 
 
-class OraclePool:
-    def __init__(self, config: DataSourceConfig):
+class AsyncOracleDatabase:
+    def __init__(self, config: DataSourceConfig, query_timeout_seconds: int = 30):
         self.config = config
-        self.pool = oracledb.create_pool(
-            user=config.user,
-            password=config.password,
-            dsn=config.dsn,
-            min=config.pool.min,
-            max=config.pool.max,
-            increment=config.pool.increment,
-            timeout=config.pool.timeout,
+        self.query_timeout_seconds = query_timeout_seconds
+        self.pool: oracledb.AsyncConnectionPool | None = None
+
+    def open(self) -> None:
+        if self.pool is not None:
+            return
+
+        self.pool = oracledb.create_pool_async(
+            user=self.config.user,
+            password=self.config.password,
+            dsn=self.config.dsn,
+            min=self.config.pool.min,
+            max=self.config.pool.max,
+            increment=self.config.pool.increment,
+            timeout=self.config.pool.timeout,
+            wait_timeout=self.config.pool.wait_timeout_ms,
+            getmode=oracledb.POOL_GETMODE_TIMEDWAIT,
         )
 
-    def close(self):
-        self.pool.close()
+    async def close(self) -> None:
+        if self.pool is not None:
+            await self.pool.close()
+            self.pool = None
 
-    def execute(
+    async def ping(self) -> None:
+        self.open()
+        assert self.pool is not None
+        async with self.pool.acquire() as connection:
+            await connection.ping()
+
+    async def execute(
         self,
         sql: str,
-        params: Dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
         result: str = "many",
-    ):
+    ) -> Any:
         validate_read_only_sql(sql)
-        params = params or {}
+        self.open()
+        assert self.pool is not None
 
-        with self.pool.acquire() as conn:
+        async with self.pool.acquire() as connection:
+            with suppress(Exception):
+                connection.call_timeout = self.query_timeout_seconds * 1000
+
+            await connection.rollback()
+
             try:
-                conn.call_timeout = 30_000
-            except Exception:
-                pass
+                async with connection.cursor() as cursor:
+                    await cursor.execute("SET TRANSACTION READ ONLY")
+                    await cursor.execute(sql, params or {})
 
-            with conn.cursor() as cursor:
-                cursor.execute(sql, params)
+                    if result == "scalar":
+                        row = await cursor.fetchone()
+                        return None if row is None else jsonable(row[0])
 
-                if result == "scalar":
-                    row = cursor.fetchone()
-                    return None if row is None else to_jsonable(row[0])
+                    columns = [(item[0] or "").lower() for item in cursor.description]
 
-                columns = [
-                    (desc[0] or "").lower()
-                    for desc in cursor.description
-                ]
+                    if result == "one":
+                        row = await cursor.fetchone()
+                        return (
+                            None
+                            if row is None
+                            else jsonable(dict(zip(columns, row, strict=False)))
+                        )
 
-                if result == "one":
-                    row = cursor.fetchone()
-                    if row is None:
-                        return None
-                    return to_jsonable(dict(zip(columns, row)))
-
-                rows = cursor.fetchall()
-                return [
-                    to_jsonable(dict(zip(columns, row)))
-                    for row in rows
-                ]
-
-    def ping(self) -> bool:
-        with self.pool.acquire() as conn:
-            conn.ping()
-        return True
+                    rows = await cursor.fetchall()
+                    return [jsonable(dict(zip(columns, row, strict=False))) for row in rows]
+            finally:
+                await connection.rollback()

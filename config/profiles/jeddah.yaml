@@ -1,0 +1,90 @@
+id: jeddah
+name: Jeddah Commercial Oracle
+description: Jeddah commercial Oracle model profile
+enabled: true
+
+metadata:
+  site: Jeddah
+  database_role: commercial
+  schema_mapping_status: pending
+
+datasources:
+  model:
+    driver: oracle
+    user: d5000
+    password: __LOCAL_OVERRIDE_REQUIRED__
+    dsn: 172.16.21.45:1521/jedup8000
+    pool:
+      min: 1
+      max: 8
+      increment: 1
+      timeout: 60
+      wait_timeout_ms: 10000
+
+catalog:
+  enabled: true
+  source: model
+  default_page_size: 50
+  max_page_size: 200
+  cache_ttl_seconds: 15
+
+hierarchy:
+  root_query: tree_root
+  children_queries: {}
+
+entities: {}
+
+search:
+  query: search
+  default_limit: 20
+  max_limit: 100
+
+realtime:
+  enabled: false
+
+queries:
+  tree_root:
+    source: model
+    result: many
+    cache_ttl_seconds: 30
+    allowed_params: []
+    required_params: []
+    sql: |
+      SELECT
+          'JED' AS id,
+          'Jeddah Oracle - model mapping pending' AS name,
+          'system' AS type,
+          0 AS has_children
+      FROM dual
+
+  search:
+    source: model
+    result: many
+    cache_ttl_seconds: 0
+    allowed_params: [q_like, limit, entity_type]
+    required_params: [q_like, limit]
+    sql: |
+      SELECT
+          'JED' AS id,
+          'Jeddah Oracle' AS name,
+          'system' AS type,
+          'connection' AS subtype
+      FROM dual
+      WHERE UPPER('Jeddah Oracle') LIKE :q_like
+        AND ROWNUM <= :limit
+
+  oracle_info:
+    source: model
+    result: one
+    exposed: true
+    cache_ttl_seconds: 0
+    allowed_params: []
+    required_params: []
+    sql: |
+      SELECT
+          SYS_CONTEXT('USERENV', 'DB_NAME') AS db_name,
+          SYS_CONTEXT('USERENV', 'SERVICE_NAME') AS service_name,
+          SYS_CONTEXT('USERENV', 'CURRENT_USER') AS current_user,
+          SYS_CONTEXT('USERENV', 'SERVER_HOST') AS server_host,
+          SYSDATE AS db_time
+      FROM dual
