@@ -26,6 +26,31 @@ class CatalogNode(DomainModel):
     run_state: int | None = None
 
 
+class DirectoryItem(DomainModel):
+    """Frontend-friendly directory projection over the canonical catalog node."""
+
+    id: str
+    parent_id: str | None = None
+    node_type: str
+    entity_type: str
+    source_id: str
+    code: str | None = None
+    name: str
+    description: str | None = None
+    level: int = Field(ge=0)
+    sort_order: int = 0
+    has_children: bool = False
+    status: int | None = None
+    run_state: int | None = None
+    type: str | None = None
+    voltage: str | None = None
+    area: str | None = None
+    substation: str | None = None
+    bay: str | None = None
+    feeder: str | None = None
+    equipment: str | None = None
+
+
 class EquipmentSummary(DomainModel):
     id: str
     entity_type: str
@@ -52,6 +77,7 @@ class EquipmentSignal(DomainModel):
     source_id: str
     station_id: str | None = None
     owner_name: str | None = None
+    equipment: str | None = None
     code: str | None = None
     name: str | None = None
     data_type: int | None = None
@@ -77,6 +103,7 @@ class PageMeta(DomainModel):
     limit: int = Field(ge=1)
     returned: int = Field(ge=0)
     has_more: bool
+    total: int | None = Field(default=None, ge=0)
 
 
 class PageResult(DomainModel, Generic[T]):

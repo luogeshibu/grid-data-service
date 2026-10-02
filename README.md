@@ -1,6 +1,6 @@
 # Grid Data Service
 
-**Version: v0.5.0**
+**Version: v0.5.1**
 
 Production-oriented, read-only FastAPI backend for a D5000 power-equipment catalog,
 equipment details, topology relations and measurement points.
@@ -201,6 +201,11 @@ All list endpoints return the same envelope:
   "meta": {"offset": 0, "limit": 50, "returned": 0, "has_more": false}
 }
 ```
+
+The explicit directory endpoints also return frontend display fields such as
+`voltage`, `area`, `substation`, `bay`, `feeder`, `equipment` and `type` when the
+Oracle model has a reliable mapping. `meta.total` is the filtered result count,
+so a table view can render accurate pagination without guessing from `has_more`.
 
 `profile_id` is the configured profile name, currently `jeddah`; it is not a database
 user or Oracle schema name.

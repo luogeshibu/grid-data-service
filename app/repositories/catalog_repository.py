@@ -264,6 +264,26 @@ class CatalogRepository:
         WHERE row_number > :offset
         """
 
+    @staticmethod
+    def _paged_directory_sql(inner_sql: str, order_by: str) -> str:
+        fields = (
+            "id, parent_id, node_type, entity_type, source_id, code, name, description, "
+            '"level", sort_order, has_children, status, run_state, type, voltage, area, '
+            "substation, bay, feeder, equipment, total_count"
+        )
+        return f"""
+        SELECT {fields}
+        FROM (
+            SELECT ordered_rows.*, ROWNUM AS row_number
+            FROM (
+                {inner_sql}
+                ORDER BY {order_by}
+            ) ordered_rows
+            WHERE ROWNUM <= :upper_bound
+        )
+        WHERE row_number > :offset
+        """
+
     async def roots(self, profile_id: str, offset: int, limit: int) -> list[dict[str, Any]]:
         inner_sql = """
         SELECT
@@ -520,6 +540,74 @@ class CatalogRepository:
             ),
         }.get(entity_type, "0")
 
+    @classmethod
+    def _directory_context(
+        cls, entity_type: str, spec: dict[str, Any], alias: str = "t"
+    ) -> dict[str, str]:
+        joins: list[str] = []
+        if entity_type == "substation":
+            joins.append(f"LEFT JOIN basevoltage bv ON bv.id = {alias}.bv_id")
+            return {
+                "joins": " ".join(joins),
+                "type": "CAST(NULL AS VARCHAR2(128))",
+                "voltage": "bv.name",
+                "area": f"TO_CHAR({alias}.subarea_id)",
+                "substation": "CAST(NULL AS VARCHAR2(128))",
+                "bay": "CAST(NULL AS VARCHAR2(128))",
+            }
+
+        if entity_type == "feeder":
+            joins.extend(
+                [
+                    f"LEFT JOIN substation s ON s.id = {alias}.st_id",
+                    f"LEFT JOIN bay b ON b.st_id = {alias}.st_id "
+                    f"AND UPPER(b.name) = UPPER({alias}.name)",
+                    "LEFT JOIN voltagelevel vl ON vl.id = b.vl_id",
+                    "LEFT JOIN basevoltage bv ON bv.id = b.bv_id",
+                ]
+            )
+            return {
+                "joins": " ".join(joins),
+                "type": "CAST(NULL AS VARCHAR2(128))",
+                "voltage": "REGEXP_SUBSTR(NVL(vl.name, bv.name), '[^/]+$')",
+                "area": "CAST(NULL AS VARCHAR2(128))",
+                "substation": "s.name",
+                "bay": "b.name",
+            }
+
+        station_expression = "CAST(NULL AS VARCHAR2(128))"
+        bay_expression = "CAST(NULL AS VARCHAR2(128))"
+        voltage_expression = "CAST(NULL AS VARCHAR2(128))"
+        if spec["station"] != "NULL":
+            joins.append(f"LEFT JOIN substation s ON s.id = {alias}.{spec['station']}")
+            station_expression = "s.name"
+        if spec["bay"] != "NULL":
+            joins.append(f"LEFT JOIN bay b ON b.id = {alias}.{spec['bay']}")
+            bay_expression = "b.name"
+        if spec["voltage"] != "NULL":
+            joins.append(f"LEFT JOIN voltagelevel vl ON vl.id = {alias}.{spec['voltage']}")
+            voltage_expression = "vl.name"
+        if spec["base_voltage"] != "NULL":
+            joins.append(f"LEFT JOIN basevoltage bv ON bv.id = {alias}.{spec['base_voltage']}")
+            voltage_expression = f"NVL({voltage_expression}, bv.name)"
+        elif spec["bay"] != "NULL":
+            joins.append("LEFT JOIN voltagelevel vl_bay ON vl_bay.id = b.vl_id")
+            voltage_expression = "vl_bay.name"
+        if voltage_expression != "CAST(NULL AS VARCHAR2(128))":
+            voltage_expression = f"REGEXP_SUBSTR({voltage_expression}, '[^/]+$')"
+        type_expression = {
+            "bay": f"TO_CHAR({alias}.bay_type)",
+            "busbar_section": f"TO_CHAR({alias}.pos_type)",
+        }.get(entity_type, "CAST(NULL AS VARCHAR2(128))")
+        return {
+            "joins": " ".join(joins),
+            "type": type_expression,
+            "voltage": voltage_expression,
+            "area": "CAST(NULL AS VARCHAR2(128))",
+            "substation": station_expression,
+            "bay": bay_expression,
+        }
+
     async def list_nodes(
         self,
         profile_id: str,
@@ -558,7 +646,16 @@ class CatalogRepository:
             params["node_pattern"] = f"%{query.upper()}%"
 
         description_column = spec.get("description", "describe")
+        context = self._directory_context(entity_type, spec)
         parent_expression = self._node_parent_expression(entity_type, spec)
+        status_expression = (
+            "CAST(NULL AS NUMBER)" if spec["status"] == "NULL" else f"t.{spec['status']}"
+        )
+        run_state_expression = (
+            "CAST(NULL AS NUMBER)"
+            if spec["run_state"] == "NULL"
+            else f"t.{spec['run_state']}"
+        )
         inner_sql = f"""
         SELECT
             '{entity_type}:' || TO_CHAR(t.id) AS id,
@@ -572,12 +669,21 @@ class CatalogRepository:
             {self._node_level(entity_type)} AS "level",
             t.id AS sort_order,
             {self._node_has_children_expression(entity_type)} AS has_children,
-            {spec['status']} AS status,
-            {spec['run_state']} AS run_state
+            {status_expression} AS status,
+            {run_state_expression} AS run_state,
+            {context['type']} AS type,
+            {context['voltage']} AS voltage,
+            {context['area']} AS area,
+            {context['substation']} AS substation,
+            {context['bay']} AS bay,
+            CAST(NULL AS VARCHAR2(128)) AS feeder,
+            CAST(NULL AS VARCHAR2(128)) AS equipment,
+            COUNT(*) OVER() AS total_count
         FROM {spec['table']} t
+        {context['joins']}
         WHERE {' AND '.join(conditions)}
         """
-        sql = self._paged_node_sql(inner_sql, '"level", UPPER(name), sort_order')
+        sql = self._paged_directory_sql(inner_sql, '"level", UPPER(t.name), t.id')
         db = await self._db(profile_id)
         return await db.execute(sql, {**params, **self._page_params(offset, limit)})
 
@@ -616,7 +722,16 @@ class CatalogRepository:
                 )
                 params["equipment_pattern"] = f"%{query.upper()}%"
             description_column = spec.get("description", "describe")
+            context = self._directory_context(kind, spec)
             parent_expression = self._node_parent_expression(kind, spec)
+            status_expression = (
+                "CAST(NULL AS NUMBER)" if spec["status"] == "NULL" else f"t.{spec['status']}"
+            )
+            run_state_expression = (
+                "CAST(NULL AS NUMBER)"
+                if spec["run_state"] == "NULL"
+                else f"t.{spec['run_state']}"
+            )
             branches.append(
                 f"""
                 SELECT
@@ -631,14 +746,30 @@ class CatalogRepository:
                     {self._node_level(kind)} AS "level",
                     t.id AS sort_order,
                     {self._node_has_children_expression(kind)} AS has_children,
-                    {spec['status']} AS status,
-                    {spec['run_state']} AS run_state
+                    {status_expression} AS status,
+                    {run_state_expression} AS run_state,
+                    '{kind}' AS type,
+                    {context['voltage']} AS voltage,
+                    {context['area']} AS area,
+                    {context['substation']} AS substation,
+                    {context['bay']} AS bay,
+                    CAST(NULL AS VARCHAR2(128)) AS feeder,
+                    CAST(NULL AS VARCHAR2(128)) AS equipment,
+                    CAST(NULL AS NUMBER) AS total_count
                 FROM {spec['table']} t
+                {context['joins']}
                 WHERE {' AND '.join(conditions)}
                 """
             )
-        inner_sql = "SELECT * FROM (" + " UNION ALL ".join(branches) + ")"
-        sql = self._paged_node_sql(inner_sql, '"level", UPPER(name), sort_order')
+        inner_sql = (
+            "SELECT id, parent_id, node_type, entity_type, source_id, code, name, description, "
+            '"level", sort_order, has_children, status, run_state, type, voltage, area, '
+            "substation, bay, feeder, equipment, COUNT(*) OVER() AS total_count "
+            "FROM ("
+            + " UNION ALL ".join(branches)
+            + ") equipment_rows"
+        )
+        sql = self._paged_directory_sql(inner_sql, '"level", UPPER(name), sort_order')
         db = await self._db(profile_id)
         return await db.execute(sql, {**params, **self._page_params(offset, limit)})
 
@@ -812,10 +943,16 @@ class CatalogRepository:
             WHERE {where_sql.replace('mp.', 'ma.')}
             """,
         ]
-        inner_sql = "SELECT * FROM (" + " UNION ALL ".join(branches) + ")"
+        inner_sql = (
+            "SELECT signal_type, id, source_id, station_id, owner_name, owner_name AS equipment, "
+            "code, name, data_type, value, quality, changed_at, COUNT(*) OVER() AS total_count "
+            "FROM ("
+            + " UNION ALL ".join(branches)
+            + ") signal_rows"
+        )
         sql = f"""
-        SELECT signal_type, id, source_id, station_id, owner_name, code, name,
-               data_type, value, quality, changed_at
+        SELECT signal_type, id, source_id, station_id, owner_name, equipment, code, name,
+               data_type, value, quality, changed_at, total_count
         FROM (
             SELECT ordered_rows.*, ROWNUM AS row_number
             FROM (

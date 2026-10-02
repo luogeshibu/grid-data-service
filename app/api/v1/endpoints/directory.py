@@ -5,13 +5,13 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 
 from app.api.dependencies import get_catalog_service
-from app.domain.models import CatalogNode, EquipmentSignal, PageResult
+from app.domain.models import DirectoryItem, EquipmentSignal, PageResult
 from app.services.catalog_service import CatalogService
 
 router = APIRouter(prefix="/{profile_id}", tags=["Power Equipment Directory"])
 
 
-@router.get("/substations", response_model=PageResult[CatalogNode])
+@router.get("/substations", response_model=PageResult[DirectoryItem])
 async def substations(
     profile_id: str,
     q: Annotated[str | None, Query(max_length=200)] = None,
@@ -22,7 +22,7 @@ async def substations(
     return await service.list_nodes(profile_id, "substation", None, None, q, offset, limit)
 
 
-@router.get("/bays", response_model=PageResult[CatalogNode])
+@router.get("/bays", response_model=PageResult[DirectoryItem])
 async def bays(
     profile_id: str,
     substation_id: Annotated[int | None, Query(gt=0)] = None,
@@ -34,7 +34,7 @@ async def bays(
     return await service.list_nodes(profile_id, "bay", substation_id, None, q, offset, limit)
 
 
-@router.get("/busbars", response_model=PageResult[CatalogNode])
+@router.get("/busbars", response_model=PageResult[DirectoryItem])
 async def busbars(
     profile_id: str,
     substation_id: Annotated[int | None, Query(gt=0)] = None,
@@ -49,7 +49,7 @@ async def busbars(
     )
 
 
-@router.get("/feeders", response_model=PageResult[CatalogNode])
+@router.get("/feeders", response_model=PageResult[DirectoryItem])
 async def feeders(
     profile_id: str,
     substation_id: Annotated[int | None, Query(gt=0)] = None,
@@ -61,7 +61,7 @@ async def feeders(
     return await service.list_nodes(profile_id, "feeder", substation_id, None, q, offset, limit)
 
 
-@router.get("/equipment", response_model=PageResult[CatalogNode])
+@router.get("/equipment", response_model=PageResult[DirectoryItem])
 async def equipment(
     profile_id: str,
     entity_type: Annotated[

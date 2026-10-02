@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.5.1 - 2026-10-02
+
+Aligned directory list responses with the existing `grid-data-web` catalog view.
+
+- Added `voltage`, `area`, `substation`, `bay`, `type` and related display fields.
+- Added accurate filtered `meta.total` values for directory and signal lists.
+- Added equipment owner context to signal list responses.
+- Kept the canonical catalog APIs unchanged while adding a frontend-friendly projection.
+
 ## v0.5.0 - 2026-10-02
 
 Added explicit read-only power-equipment directory list APIs.

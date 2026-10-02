@@ -6,6 +6,7 @@ from typing import Any, TypeVar
 
 from app.domain.models import (
     CatalogNode,
+    DirectoryItem,
     EquipmentDetail,
     EquipmentSignal,
     EquipmentSummary,
@@ -58,7 +59,11 @@ class CatalogService:
     def _page(
         rows: list[dict[str, Any]], offset: int, limit: int, mapper: Callable[[dict[str, Any]], T]
     ) -> PageResult[T]:
-        items = [mapper(row) for row in rows[:limit]]
+        total = rows[0].get("total_count") if rows else None
+        items = [
+            mapper({key: value for key, value in row.items() if key != "total_count"})
+            for row in rows[:limit]
+        ]
         return PageResult(
             items=items,
             meta=PageMeta(
@@ -66,6 +71,7 @@ class CatalogService:
                 limit=limit,
                 returned=len(items),
                 has_more=len(rows) > limit,
+                total=int(total) if total is not None else None,
             ),
         )
 
@@ -182,7 +188,7 @@ class CatalogService:
         query: str | None,
         offset: int,
         limit: int | None,
-    ) -> PageResult[CatalogNode]:
+    ) -> PageResult[DirectoryItem]:
         profile = self.profile(profile_id)
         if entity_type not in {"substation", "bay", "busbar_section", "feeder"}:
             raise CatalogInputError(f"Unsupported directory entity type: {entity_type}")
@@ -209,7 +215,7 @@ class CatalogService:
             offset,
             resolved_limit,
         )
-        result = self._page(rows, offset, resolved_limit, self._node)
+        result = self._page(rows, offset, resolved_limit, DirectoryItem.model_validate)
         self.cache.set(key, result, profile.catalog.cache_ttl_seconds)
         return result
 
@@ -222,7 +228,7 @@ class CatalogService:
         query: str | None,
         offset: int,
         limit: int | None,
-    ) -> PageResult[CatalogNode]:
+    ) -> PageResult[DirectoryItem]:
         profile = self.profile(profile_id)
         if entity_type is not None and entity_type not in CatalogRepository.equipment_types():
             raise CatalogInputError(f"Unsupported equipment entity type: {entity_type}")
@@ -249,7 +255,7 @@ class CatalogService:
             offset,
             resolved_limit,
         )
-        result = self._page(rows, offset, resolved_limit, self._node)
+        result = self._page(rows, offset, resolved_limit, DirectoryItem.model_validate)
         self.cache.set(key, result, profile.catalog.cache_ttl_seconds)
         return result
 
