@@ -180,6 +180,26 @@ class CatalogRepository:
             "parent_type": "bay",
             "attributes": ["aclnseg_id", "nd", "v_term", "open_flag", "send_flag"],
         },
+        "feeder": {
+            "table": "DMS_FEEDER_DEVICE",
+            "station": "st_id",
+            "bay": "NULL",
+            "voltage": "NULL",
+            "base_voltage": "NULL",
+            "status": "status",
+            "run_state": "run_state",
+            "parent": "st_id",
+            "parent_type": "substation",
+            "description": "discribe",
+            "attributes": [
+                "type",
+                "resp_area",
+                "load_rate",
+                "tr_id",
+                "dms_area_id",
+                "graph_name",
+            ],
+        },
     }
 
     _COMMON_COLUMNS = {
@@ -197,6 +217,17 @@ class CatalogRepository:
         "run_state",
         "rdf_id",
     }
+    _EQUIPMENT_TYPES = (
+        "breaker",
+        "disconnector",
+        "ground_disconnector",
+        "power_transformer",
+        "transformer_winding",
+        "energy_consumer",
+        "single_terminal",
+        "ac_line_segment",
+        "ac_line_end",
+    )
 
     @classmethod
     def supported_entity_types(cls) -> tuple[str, ...]:
@@ -249,6 +280,7 @@ class CatalogRepository:
             CASE WHEN EXISTS (SELECT 1 FROM voltagelevel vl WHERE vl.st_id = s.id)
                     OR EXISTS (SELECT 1 FROM bay b WHERE b.st_id = s.id)
                     OR EXISTS (SELECT 1 FROM powertransformer pt WHERE pt.st_id = s.id)
+                    OR EXISTS (SELECT 1 FROM dms_feeder_device f WHERE f.st_id = s.id)
                  THEN 1 ELSE 0 END AS has_children,
             s.status AS status,
             CAST(NULL AS NUMBER) AS run_state
@@ -301,6 +333,14 @@ class CatalogRepository:
                      THEN 1 ELSE 0 END, pt.status, pt.run_state
             FROM powertransformer pt
             WHERE :parent_type = 'substation' AND pt.st_id = :parent_source_id
+
+            UNION ALL
+            SELECT
+                'feeder:' || TO_CHAR(f.id), 'substation:' || TO_CHAR(f.st_id),
+                'feeder', 'feeder', TO_CHAR(f.id), NVL(f.code, TO_CHAR(f.id)),
+                f.name, f.discribe, 1, f.id, 0, f.status, f.run_state
+            FROM dms_feeder_device f
+            WHERE :parent_type = 'substation' AND f.st_id = :parent_source_id
 
             UNION ALL
             SELECT
@@ -407,7 +447,7 @@ class CatalogRepository:
             TO_CHAR(id) AS source_id,
             NVL(code, TO_CHAR(id)) AS code,
             name,
-            describe AS description,
+            {spec.get("description", "describe")} AS description,
             TO_CHAR({spec["station"]}) AS station_id,
             TO_CHAR({spec["bay"]}) AS bay_id,
             TO_CHAR({spec["voltage"]}) AS voltage_level_id,
@@ -423,6 +463,184 @@ class CatalogRepository:
         if row is None:
             return None
         return row
+
+    @classmethod
+    def equipment_types(cls) -> tuple[str, ...]:
+        return cls._EQUIPMENT_TYPES
+
+    @staticmethod
+    def _node_level(entity_type: str) -> str:
+        return {
+            "substation": "0",
+            "voltage_level": "1",
+            "power_transformer": "1",
+            "feeder": "1",
+            "bay": "2",
+            "transformer_winding": "2",
+        }.get(entity_type, "3")
+
+    @staticmethod
+    def _node_parent_expression(entity_type: str, spec: dict[str, Any], alias: str = "t") -> str:
+        if entity_type == "bay":
+            return (
+                f"CASE WHEN {alias}.vl_id IS NOT NULL THEN "
+                f"'voltage_level:' || TO_CHAR({alias}.vl_id) "
+                f"WHEN {alias}.st_id IS NOT NULL THEN 'substation:' || TO_CHAR({alias}.st_id) END"
+            )
+        parent_id = spec["parent"]
+        if parent_id == "NULL":
+            return "CAST(NULL AS VARCHAR2(128))"
+        return (
+            f"CASE WHEN {alias}.{parent_id} IS NULL THEN NULL ELSE "
+            f"'{spec['parent_type']}:' || TO_CHAR({alias}.{parent_id}) END"
+        )
+
+    @staticmethod
+    def _node_has_children_expression(entity_type: str, alias: str = "t") -> str:
+        return {
+            "substation": (
+                f"CASE WHEN EXISTS (SELECT 1 FROM voltagelevel x WHERE x.st_id = {alias}.id) "
+                f"OR EXISTS (SELECT 1 FROM bay x WHERE x.st_id = {alias}.id) "
+                f"OR EXISTS (SELECT 1 FROM powertransformer x WHERE x.st_id = {alias}.id) "
+                f"OR EXISTS (SELECT 1 FROM dms_feeder_device x WHERE x.st_id = {alias}.id) "
+                "THEN 1 ELSE 0 END"
+            ),
+            "voltage_level": (
+                f"CASE WHEN EXISTS (SELECT 1 FROM bay x WHERE x.vl_id = {alias}.id) "
+                "THEN 1 ELSE 0 END"
+            ),
+            "bay": (
+                f"CASE WHEN NVL({alias}.dev_num, 0) > 0 OR NVL({alias}.brk_num, 0) > 0 "
+                f"OR NVL({alias}.disc_num, 0) > 0 OR NVL({alias}.gdisc_num, 0) > 0 "
+                "THEN 1 ELSE 0 END"
+            ),
+            "power_transformer": (
+                f"CASE WHEN EXISTS (SELECT 1 FROM transformerwinding x "
+                f"WHERE x.tr_id = {alias}.id) THEN 1 ELSE 0 END"
+            ),
+        }.get(entity_type, "0")
+
+    async def list_nodes(
+        self,
+        profile_id: str,
+        entity_type: str,
+        station_id: int | None,
+        bay_id: int | None,
+        query: str | None,
+        offset: int,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        spec = self._SPECS.get(entity_type)
+        if spec is None:
+            raise KeyError(f"Unsupported entity type: {entity_type}")
+
+        conditions = ["1 = 1"]
+        params: dict[str, Any] = {}
+        station_column = spec["station"]
+        bay_column = spec["bay"]
+        if station_id is not None:
+            if station_column == "NULL":
+                conditions.append("1 = 0")
+            else:
+                conditions.append(f"t.{station_column} = :station_id")
+                params["station_id"] = station_id
+        if bay_id is not None:
+            if bay_column == "NULL":
+                conditions.append("1 = 0")
+            else:
+                conditions.append(f"t.{bay_column} = :bay_id")
+                params["bay_id"] = bay_id
+        if query:
+            conditions.append(
+                "(UPPER(t.name) LIKE :node_pattern "
+                "OR UPPER(NVL(t.code, '')) LIKE :node_pattern)"
+            )
+            params["node_pattern"] = f"%{query.upper()}%"
+
+        description_column = spec.get("description", "describe")
+        parent_expression = self._node_parent_expression(entity_type, spec)
+        inner_sql = f"""
+        SELECT
+            '{entity_type}:' || TO_CHAR(t.id) AS id,
+            {parent_expression} AS parent_id,
+            '{entity_type}' AS node_type,
+            '{entity_type}' AS entity_type,
+            TO_CHAR(t.id) AS source_id,
+            NVL(t.code, TO_CHAR(t.id)) AS code,
+            t.name AS name,
+            t.{description_column} AS description,
+            {self._node_level(entity_type)} AS "level",
+            t.id AS sort_order,
+            {self._node_has_children_expression(entity_type)} AS has_children,
+            {spec['status']} AS status,
+            {spec['run_state']} AS run_state
+        FROM {spec['table']} t
+        WHERE {' AND '.join(conditions)}
+        """
+        sql = self._paged_node_sql(inner_sql, '"level", UPPER(name), sort_order')
+        db = await self._db(profile_id)
+        return await db.execute(sql, {**params, **self._page_params(offset, limit)})
+
+    async def list_equipment(
+        self,
+        profile_id: str,
+        entity_type: str | None,
+        station_id: int | None,
+        bay_id: int | None,
+        query: str | None,
+        offset: int,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        types = (entity_type,) if entity_type else self._EQUIPMENT_TYPES
+        branches: list[str] = []
+        params: dict[str, Any] = {}
+        for kind in types:
+            spec = self._SPECS[kind]
+            conditions = ["1 = 1"]
+            if station_id is not None:
+                if spec["station"] == "NULL":
+                    conditions.append("1 = 0")
+                else:
+                    conditions.append(f"t.{spec['station']} = :station_id")
+                    params["station_id"] = station_id
+            if bay_id is not None:
+                if spec["bay"] == "NULL":
+                    conditions.append("1 = 0")
+                else:
+                    conditions.append(f"t.{spec['bay']} = :bay_id")
+                    params["bay_id"] = bay_id
+            if query:
+                conditions.append(
+                    "(UPPER(t.name) LIKE :equipment_pattern "
+                    "OR UPPER(NVL(t.code, '')) LIKE :equipment_pattern)"
+                )
+                params["equipment_pattern"] = f"%{query.upper()}%"
+            description_column = spec.get("description", "describe")
+            parent_expression = self._node_parent_expression(kind, spec)
+            branches.append(
+                f"""
+                SELECT
+                    '{kind}:' || TO_CHAR(t.id) AS id,
+                    {parent_expression} AS parent_id,
+                    '{kind}' AS node_type,
+                    '{kind}' AS entity_type,
+                    TO_CHAR(t.id) AS source_id,
+                    NVL(t.code, TO_CHAR(t.id)) AS code,
+                    t.name AS name,
+                    t.{description_column} AS description,
+                    {self._node_level(kind)} AS "level",
+                    t.id AS sort_order,
+                    {self._node_has_children_expression(kind)} AS has_children,
+                    {spec['status']} AS status,
+                    {spec['run_state']} AS run_state
+                FROM {spec['table']} t
+                WHERE {' AND '.join(conditions)}
+                """
+            )
+        inner_sql = "SELECT * FROM (" + " UNION ALL ".join(branches) + ")"
+        sql = self._paged_node_sql(inner_sql, '"level", UPPER(name), sort_order')
+        db = await self._db(profile_id)
+        return await db.execute(sql, {**params, **self._page_params(offset, limit)})
 
     async def search(
         self,
@@ -452,6 +670,7 @@ class CatalogRepository:
                 "bay": "2",
                 "power_transformer": "1",
                 "transformer_winding": "2",
+                "feeder": "1",
             }.get(kind, "3")
             has_children_expression = {
                 "substation": (
@@ -473,13 +692,15 @@ class CatalogRepository:
                     "CASE WHEN EXISTS (SELECT 1 FROM transformerwinding x WHERE x.tr_id = t.id) "
                     "THEN 1 ELSE 0 END"
                 ),
+                "feeder": "0",
             }.get(kind, "0")
+            description_column = spec.get("description", "describe")
             branches.append(
                 f"""
                 SELECT '{kind}' AS node_type, '{kind}' AS entity_type, TO_CHAR(t.id) AS source_id,
                        '{kind}:' || TO_CHAR(t.id) AS id,
                        NVL(t.code, TO_CHAR(t.id)) AS code, t.name AS name,
-                       t.describe AS description,
+                       t.{description_column} AS description,
                        {parent_expression} AS parent_id,
                        {level_expression} AS "level",
                        t.id AS sort_order,
@@ -535,6 +756,81 @@ class CatalogRepository:
         """
         db = await self._db(profile_id)
         return await db.execute(sql, {"source_id": source_id, "limit": limit})
+
+    async def signal_list(
+        self,
+        profile_id: str,
+        station_id: int | None,
+        entity_type: str | None,
+        entity_id: int | None,
+        query: str | None,
+        offset: int,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        join_parts: list[str] = []
+        conditions: list[str] = []
+        params: dict[str, Any] = {}
+        if entity_type is not None:
+            spec = self._SPECS[entity_type]
+            join_parts.append(f"JOIN {spec['table']} d ON d.id = :entity_id")
+            conditions.extend(
+                [
+                    "mp.st_id = d.st_id",
+                    "UPPER(mp.name) LIKE UPPER(d.name) || '/%'",
+                ]
+            )
+            params["entity_id"] = entity_id
+        if station_id is not None:
+            conditions.append("mp.st_id = :signal_station_id")
+            params["signal_station_id"] = station_id
+        if query:
+            conditions.append("UPPER(mp.name) LIKE :signal_pattern")
+            params["signal_pattern"] = f"%{query.upper()}%"
+        where_sql = " AND ".join(conditions) or "1 = 1"
+        join_sql = " ".join(join_parts)
+        branches = [
+            f"""
+            SELECT 'digital' AS signal_type, TO_CHAR(mp.id) AS id, TO_CHAR(mp.id) AS source_id,
+                   TO_CHAR(mp.st_id) AS station_id,
+                   REGEXP_SUBSTR(mp.name, '^[^/]+') AS owner_name,
+                   NVL(mp.code, TO_CHAR(mp.id)) AS code, mp.name,
+                   mp.datatype AS data_type, mp.value, mp.qual AS quality,
+                   TO_CHAR(mp.chg_time) AS changed_at
+            FROM measpoint mp
+            {join_sql}
+            WHERE {where_sql}
+            """,
+            f"""
+            SELECT 'analog' AS signal_type, TO_CHAR(ma.id) AS id, TO_CHAR(ma.id) AS source_id,
+                   TO_CHAR(ma.st_id) AS station_id,
+                   REGEXP_SUBSTR(ma.name, '^[^/]+') AS owner_name,
+                   NVL(ma.code, TO_CHAR(ma.id)) AS code, ma.name,
+                   ma.datatype AS data_type, ma.value, ma.qual AS quality,
+                   TO_CHAR(ma.chg_time) AS changed_at
+            FROM measanalog ma
+            {join_sql.replace('mp.', 'ma.')}
+            WHERE {where_sql.replace('mp.', 'ma.')}
+            """,
+        ]
+        inner_sql = "SELECT * FROM (" + " UNION ALL ".join(branches) + ")"
+        sql = f"""
+        SELECT signal_type, id, source_id, station_id, owner_name, code, name,
+               data_type, value, quality, changed_at
+        FROM (
+            SELECT ordered_rows.*, ROWNUM AS row_number
+            FROM (
+                {inner_sql}
+                ORDER BY UPPER(name), source_id
+            ) ordered_rows
+            WHERE ROWNUM <= :upper_bound
+        )
+        WHERE row_number > :offset
+        """
+        db = await self._db(profile_id)
+        return await db.execute(
+            sql,
+            {**params, **self._page_params(offset, limit)},
+        )
 
     async def topology(self, profile_id: str, source_id: int, limit: int) -> list[dict[str, Any]]:
         sql = """

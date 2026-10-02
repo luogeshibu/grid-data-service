@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.5.0 - 2026-10-02
+
+Added explicit read-only power-equipment directory list APIs.
+
+- Added paginated substations, bays, busbars, feeders, equipment and signals endpoints.
+- Mapped feeders to the live D5000 `DMS_FEEDER_DEVICE` table using `ST_ID`.
+- Added station/bay/text filters and scoped signal listing.
+- Exposed feeder nodes in catalog children and search results.
+- Verified all new endpoints against the commercial Oracle database using read-only transactions.
+
 ## v0.4.0 - 2026-10-02
 
 Major read-only power-equipment catalog refactor.

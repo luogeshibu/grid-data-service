@@ -173,6 +173,86 @@ class CatalogService:
         self.cache.set(key, result, profile.catalog.cache_ttl_seconds)
         return result
 
+    async def list_nodes(
+        self,
+        profile_id: str,
+        entity_type: str,
+        station_id: int | None,
+        bay_id: int | None,
+        query: str | None,
+        offset: int,
+        limit: int | None,
+    ) -> PageResult[CatalogNode]:
+        profile = self.profile(profile_id)
+        if entity_type not in {"substation", "bay", "busbar_section", "feeder"}:
+            raise CatalogInputError(f"Unsupported directory entity type: {entity_type}")
+        resolved_limit = self._limit(profile, limit)
+        key = self._cache_key(
+            "list_nodes",
+            profile_id,
+            entity_type,
+            station_id,
+            bay_id,
+            query,
+            offset,
+            resolved_limit,
+        )
+        cached, found = self.cache.get(key)
+        if found:
+            return cached
+        rows = await self.repository.list_nodes(
+            profile_id,
+            entity_type,
+            station_id,
+            bay_id,
+            query.strip() if query else None,
+            offset,
+            resolved_limit,
+        )
+        result = self._page(rows, offset, resolved_limit, self._node)
+        self.cache.set(key, result, profile.catalog.cache_ttl_seconds)
+        return result
+
+    async def list_equipment(
+        self,
+        profile_id: str,
+        entity_type: str | None,
+        station_id: int | None,
+        bay_id: int | None,
+        query: str | None,
+        offset: int,
+        limit: int | None,
+    ) -> PageResult[CatalogNode]:
+        profile = self.profile(profile_id)
+        if entity_type is not None and entity_type not in CatalogRepository.equipment_types():
+            raise CatalogInputError(f"Unsupported equipment entity type: {entity_type}")
+        resolved_limit = self._limit(profile, limit)
+        key = self._cache_key(
+            "list_equipment",
+            profile_id,
+            entity_type,
+            station_id,
+            bay_id,
+            query,
+            offset,
+            resolved_limit,
+        )
+        cached, found = self.cache.get(key)
+        if found:
+            return cached
+        rows = await self.repository.list_equipment(
+            profile_id,
+            entity_type,
+            station_id,
+            bay_id,
+            query.strip() if query else None,
+            offset,
+            resolved_limit,
+        )
+        result = self._page(rows, offset, resolved_limit, self._node)
+        self.cache.set(key, result, profile.catalog.cache_ttl_seconds)
+        return result
+
     async def signals(
         self,
         profile_id: str,
@@ -184,6 +264,50 @@ class CatalogService:
         self._validate_entity_type(entity_type)
         rows = await self.repository.signals(profile_id, entity_type, entity_id, limit)
         return [EquipmentSignal.model_validate(row) for row in rows]
+
+    async def signal_list(
+        self,
+        profile_id: str,
+        station_id: int | None,
+        entity_type: str | None,
+        entity_id: int | None,
+        query: str | None,
+        offset: int,
+        limit: int | None,
+    ) -> PageResult[EquipmentSignal]:
+        profile = self.profile(profile_id)
+        if entity_type is not None:
+            self._validate_entity_type(entity_type)
+            if entity_id is None:
+                raise CatalogInputError("entity_id is required when entity_type is provided")
+        elif entity_id is not None:
+            raise CatalogInputError("entity_type is required when entity_id is provided")
+        resolved_limit = self._limit(profile, limit)
+        key = self._cache_key(
+            "signal_list",
+            profile_id,
+            station_id,
+            entity_type,
+            entity_id,
+            query,
+            offset,
+            resolved_limit,
+        )
+        cached, found = self.cache.get(key)
+        if found:
+            return cached
+        rows = await self.repository.signal_list(
+            profile_id,
+            station_id,
+            entity_type,
+            entity_id,
+            query.strip() if query else None,
+            offset,
+            resolved_limit,
+        )
+        result = self._page(rows, offset, resolved_limit, EquipmentSignal.model_validate)
+        self.cache.set(key, result, profile.catalog.cache_ttl_seconds)
+        return result
 
     async def topology(
         self,

@@ -50,6 +50,8 @@ class EquipmentSignal(DomainModel):
     id: str
     signal_type: str
     source_id: str
+    station_id: str | None = None
+    owner_name: str | None = None
     code: str | None = None
     name: str | None = None
     data_type: int | None = None

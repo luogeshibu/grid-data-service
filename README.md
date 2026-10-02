@@ -1,6 +1,6 @@
 # Grid Data Service
 
-**Version: v0.4.0**
+**Version: v0.5.0**
 
 Production-oriented, read-only FastAPI backend for a D5000 power-equipment catalog,
 equipment details, topology relations and measurement points.
@@ -153,6 +153,13 @@ GET  /api/v1/{profile_id}/catalog/roots
 GET  /api/v1/{profile_id}/catalog/nodes/{node_id}/children
 GET  /api/v1/{profile_id}/catalog/search
 
+GET  /api/v1/{profile_id}/substations
+GET  /api/v1/{profile_id}/bays?substation_id={id}
+GET  /api/v1/{profile_id}/busbars?substation_id={id}&bay_id={id}
+GET  /api/v1/{profile_id}/feeders?substation_id={id}
+GET  /api/v1/{profile_id}/equipment?substation_id={id}&bay_id={id}
+GET  /api/v1/{profile_id}/signals?substation_id={id}
+
 GET  /api/v1/{profile_id}/equipment/{entity_type}/{entity_id}
 GET  /api/v1/{profile_id}/equipment/{entity_type}/{entity_id}/signals
 
@@ -174,6 +181,29 @@ substation
 │       └── ac_line_end
 └── power_transformer
     └── transformer_winding
+
+The explicit directory list endpoints are designed for frontend tree/grid pages:
+
+- `substations` reads `SUBSTATION`.
+- `bays` reads `BAY`, optionally scoped by `substation_id`.
+- `busbars` reads `BUSBARSECTION`, optionally scoped by station or bay.
+- `feeders` reads the live D5000 `DMS_FEEDER_DEVICE` table and is scoped by `ST_ID`.
+- `equipment` reads allow-listed physical equipment tables and supports `entity_type`,
+  station, bay and text filters.
+- `signals` reads the union of `MEASPOINT` and `MEASANALOG`; use `substation_id`,
+  or pair `entity_type` with `entity_id` for an efficient scoped query.
+
+All list endpoints return the same envelope:
+
+```json
+{
+  "items": [],
+  "meta": {"offset": 0, "limit": 50, "returned": 0, "has_more": false}
+}
+```
+
+`profile_id` is the configured profile name, currently `jeddah`; it is not a database
+user or Oracle schema name.
 ```
 
 Topology is intentionally exposed as a graph relation endpoint rather than being
