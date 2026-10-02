@@ -546,12 +546,17 @@ class CatalogRepository:
     ) -> dict[str, str]:
         joins: list[str] = []
         if entity_type == "substation":
-            joins.append(f"LEFT JOIN basevoltage bv ON bv.id = {alias}.bv_id")
+            joins.extend(
+                [
+                    f"LEFT JOIN basevoltage bv ON bv.id = {alias}.bv_id",
+                    f"LEFT JOIN subcontrolarea sca ON sca.id = {alias}.subarea_id",
+                ]
+            )
             return {
                 "joins": " ".join(joins),
                 "type": "CAST(NULL AS VARCHAR2(128))",
                 "voltage": "bv.name",
-                "area": f"TO_CHAR({alias}.subarea_id)",
+                "area": f"NVL(sca.name, NVL(sca.code, TO_CHAR({alias}.subarea_id)))",
                 "substation": "CAST(NULL AS VARCHAR2(128))",
                 "bay": "CAST(NULL AS VARCHAR2(128))",
             }
